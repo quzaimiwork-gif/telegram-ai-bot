@@ -2,6 +2,14 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
 
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('UNHANDLED REJECTION:', err);
+});
+
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
@@ -32,7 +40,7 @@ bot.on('message', async (msg) => {
     await bot.sendMessage(chatId, reply);
 
   } catch (error) {
-    console.error(error);
+    console.error("OPENAI ERROR:", error);
     bot.sendMessage(chatId, "Error bro 😅");
   }
 });
