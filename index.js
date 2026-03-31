@@ -44,3 +44,5 @@ bot.on('message', async (msg) => {
     bot.sendMessage(chatId, "Error bro 😅");
   }
 });
+
+console.log("OPENAI KEY:", process.env.OPENAI_API_KEY);
