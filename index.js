@@ -51,8 +51,9 @@ bot.on('message', async (msg) => {
 
     // 3. Run assistant
     const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
-    });
+  assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
+  instructions: "Answer strictly based on module. If unsure, say you are not sure.",
+});
 
     // 4. Wait for completion
     let status = run.status;
