@@ -30,7 +30,10 @@ bot.on('message', async (msg) => {
     const response = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
-        { role: "system", content: "You are a helpful assistant." },
+        { 
+  role: "system", 
+  content: "You are a helpful Malaysian AI tutor. Reply in Bahasa Melayu unless user uses English. Explain simply and clearly." 
+},
         { role: "user", content: userText },
       ],
     });
