@@ -25,7 +25,7 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-console.log("Bot running with RAG...");
+console.log("Bot running with RAG (enhanced)...");
 
 // ===============================
 // 🌱 AUTO SEED (RUN ONCE)
@@ -78,12 +78,12 @@ async function seedOnce() {
 seedOnce();
 
 // ===============================
-// 🔍 SEARCH FUNCTION (RAG)
+// 🔍 SEARCH FUNCTION (UPGRADED)
 // ===============================
 async function searchKnowledge(userText) {
   try {
-    // 🔥 Enriched query (IMPORTANT)
-    const enrichedQuery = `Soalan berkaitan domain, MYNIC, laman web: ${userText}`;
+    // 🔥 Enriched query
+    const enrichedQuery = `Soalan berkaitan domain, MYNIC, laman web, komuniti: ${userText}`;
 
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
@@ -92,9 +92,10 @@ async function searchKnowledge(userText) {
 
     const queryEmbedding = emb.data[0].embedding;
 
+    // 🔥 Ambil TOP 3 result
     const { data, error } = await supabase.rpc('match_documents', {
       query_embedding: queryEmbedding,
-      match_count: 1
+      match_count: 3
     });
 
     if (error) {
@@ -104,15 +105,23 @@ async function searchKnowledge(userText) {
 
     if (!data || data.length === 0) return null;
 
-    console.log("Similarity score:", data[0].similarity);
+    // 🔥 Ambil similarity tertinggi
+    const bestScore = Math.max(...data.map(d => d.similarity));
 
-    // 🔥 UPDATED THRESHOLD (0.5)
-    if (data[0].similarity < 0.5) return null;
+    console.log("Best similarity:", bestScore);
 
-    return data[0].content;
+    // 🔥 Threshold (lebih tolerant)
+    if (bestScore < 0.5) return null;
+
+    // 🔥 Combine semua context
+    const combinedContext = data
+      .map(d => d.content)
+      .join("\n\n");
+
+    return combinedContext;
 
   } catch (err) {
-    console.error("Embedding error:", err);
+    console.error("Search error:", err);
     return null;
   }
 }
@@ -138,7 +147,7 @@ bot.on('message', async (msg) => {
       );
     }
 
-    // 3. AI REWRITE ONLY (STRICT)
+    // 3. AI REWRITE ONLY
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
