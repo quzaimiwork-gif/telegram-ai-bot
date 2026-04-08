@@ -4,85 +4,28 @@ const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 
 // ===============================
-// 🤖 Init Telegram Bot
+// INIT
 // ===============================
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
 
-// ===============================
-// 🧠 Init OpenAI
-// ===============================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===============================
-// 🗄️ Init Supabase
-// ===============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-console.log("Bot running with RAG (enhanced)...");
+console.log("🤖 Bot running (STRICT RAG MODE)...");
 
 // ===============================
-// 🌱 AUTO SEED (RUN ONCE)
-// ===============================
-async function seedOnce() {
-  try {
-    console.log("Checking DB...");
-
-    const { data, error } = await supabase
-      .from('knowledge')
-      .select('id')
-      .limit(1);
-
-    if (error) {
-      console.error("DB check error:", error);
-      return;
-    }
-
-    if (data && data.length > 0) {
-      console.log("Data exists. Skip seeding.");
-      return;
-    }
-
-    console.log("Seeding start...");
-
-    const knowledgeChunks = require('./knowledge.json');
-
-    for (let chunk of knowledgeChunks) {
-      const emb = await openai.embeddings.create({
-        model: "text-embedding-3-small",
-        input: chunk,
-      });
-
-      await supabase.from('knowledge').insert({
-        content: chunk,
-        embedding: emb.data[0].embedding
-      });
-
-      console.log("Inserted:", chunk.substring(0, 40));
-    }
-
-    console.log("✅ Seeding done!");
-
-  } catch (err) {
-    console.error("Seed error:", err);
-  }
-}
-
-// RUN SEED
-seedOnce();
-
-// ===============================
-// 🔍 SEARCH FUNCTION (UPGRADED)
+// SEARCH FUNCTION
 // ===============================
 async function searchKnowledge(userText) {
   try {
-    // 🔥 Enriched query
     const enrichedQuery = `Soalan berkaitan domain, MYNIC, laman web, komuniti: ${userText}`;
 
     const emb = await openai.embeddings.create({
@@ -90,35 +33,21 @@ async function searchKnowledge(userText) {
       input: enrichedQuery,
     });
 
-    const queryEmbedding = emb.data[0].embedding;
-
-    // 🔥 Ambil TOP 3 result
     const { data, error } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
+      query_embedding: emb.data[0].embedding,
       match_count: 3
     });
 
-    if (error) {
-      console.error("Search error:", error);
-      return null;
-    }
+    if (error || !data || data.length === 0) return null;
 
-    if (!data || data.length === 0) return null;
-
-    // 🔥 Ambil similarity tertinggi
     const bestScore = Math.max(...data.map(d => d.similarity));
 
     console.log("Best similarity:", bestScore);
 
-    // 🔥 Threshold (lebih tolerant)
+    // 🔥 STRICT FILTER
     if (bestScore < 0.5) return null;
 
-    // 🔥 Combine semua context
-    const combinedContext = data
-      .map(d => d.content)
-      .join("\n\n");
-
-    return combinedContext;
+    return data.map(d => d.content).join("\n\n");
 
   } catch (err) {
     console.error("Search error:", err);
@@ -127,7 +56,7 @@ async function searchKnowledge(userText) {
 }
 
 // ===============================
-// 💬 HANDLE MESSAGE
+// BOT HANDLER
 // ===============================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -136,10 +65,10 @@ bot.on('message', async (msg) => {
   if (!userText) return;
 
   try {
-    // 1. SEARCH FROM DB
+    // 1. SEARCH
     const context = await searchKnowledge(userText);
 
-    // 2. REJECT IF NOT FOUND
+    // 2. HARD BLOCK (NO CONTEXT)
     if (!context) {
       return bot.sendMessage(
         chatId,
@@ -147,7 +76,7 @@ bot.on('message', async (msg) => {
       );
     }
 
-    // 3. AI REWRITE ONLY
+    // 3. AI RESPONSE (STRICT MODE)
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
@@ -155,10 +84,19 @@ bot.on('message', async (msg) => {
         {
           role: "system",
           content: `
-Jawab hanya berdasarkan context yang diberi.
-Jangan tambah maklumat luar.
-Guna gaya santai macam bercakap dengan kawan.
-Jawapan pendek dan jelas.
+You MUST answer ONLY using the provided context.
+
+DO NOT use your own knowledge.
+DO NOT guess.
+DO NOT add anything outside the context.
+
+If the answer is not clearly found in the context,
+reply exactly:
+
+"Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
+
+Use a friendly Malaysian conversational tone.
+Keep answer short and simple.
 `
         },
         {
@@ -167,7 +105,7 @@ Jawapan pendek dan jelas.
 Context:
 ${context}
 
-Soalan:
+Question:
 ${userText}
 `
         }
@@ -176,6 +114,20 @@ ${userText}
 
     const reply = completion.choices[0].message.content;
 
+    // ===============================
+    // 🔥 EXTRA GUARD (ANTI-HALLUCINATION)
+    // ===============================
+    const firstWord = userText.toLowerCase().split(" ")[0];
+
+    if (!context.toLowerCase().includes(firstWord)) {
+      console.log("⚠️ Blocked hallucination");
+      return bot.sendMessage(
+        chatId,
+        "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
+      );
+    }
+
+    // 4. SEND REPLY
     await bot.sendMessage(chatId, reply);
 
   } catch (err) {
