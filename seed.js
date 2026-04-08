@@ -35,4 +35,5 @@ async function upload() {
   console.log("✅ Upload complete");
 }
 
-upload();
+// AUTO EXIT (IMPORTANT)
+upload().then(() => process.exit(0));
