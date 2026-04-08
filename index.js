@@ -1,48 +1,33 @@
+// 1. INIT SEMUA DULU
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 
-// ===============================
-// 🤖 Init Telegram Bot
-// ===============================
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
 
-// ===============================
-// 🧠 Init OpenAI
-// ===============================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===============================
-// 🗄️ Init Supabase
-// ===============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-console.log("Bot running with RAG...");
-
 // ===============================
-// 🌱 AUTO SEED (RUN ONCE)
+// 2. FUNCTION seedOnce
 // ===============================
 async function seedOnce() {
   try {
     console.log("Checking DB...");
 
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('knowledge')
       .select('id')
       .limit(1);
-
-    if (error) {
-      console.error("DB check error:", error);
-      return;
-    }
 
     if (data && data.length > 0) {
       console.log("Data exists. Skip seeding.");
@@ -67,53 +52,40 @@ async function seedOnce() {
       console.log("Inserted:", chunk.substring(0, 40));
     }
 
-    console.log("✅ Seeding done!");
+    console.log("Seeding done!");
 
   } catch (err) {
     console.error("Seed error:", err);
   }
 }
 
-// RUN SEED
+// ===============================
+// 3. 🔥 CALL DI SINI (PENTING)
+// ===============================
 seedOnce();
 
 // ===============================
-// 🔍 SEARCH FUNCTION (RAG)
+// 4. FUNCTION SEARCH
 // ===============================
 async function searchKnowledge(query) {
-  try {
-    const emb = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: query,
-    });
+  const emb = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: query,
+  });
 
-    const queryEmbedding = emb.data[0].embedding;
+  const { data } = await supabase.rpc('match_documents', {
+    query_embedding: emb.data[0].embedding,
+    match_count: 1
+  });
 
-    const { data, error } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
-      match_count: 1
-    });
+  if (!data || data.length === 0) return null;
+  if (data[0].similarity < 0.75) return null;
 
-    if (error) {
-      console.error("Search error:", error);
-      return null;
-    }
-
-    if (!data || data.length === 0) return null;
-
-    // STRICT CONTROL
-    if (data[0].similarity < 0.75) return null;
-
-    return data[0].content;
-
-  } catch (err) {
-    console.error("Embedding error:", err);
-    return null;
-  }
+  return data[0].content;
 }
 
 // ===============================
-// 💬 HANDLE MESSAGE
+// 5. BOT HANDLER
 // ===============================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -121,51 +93,29 @@ bot.on('message', async (msg) => {
 
   if (!userText) return;
 
-  try {
-    // 1. SEARCH FROM DB
-    const context = await searchKnowledge(userText);
+  const context = await searchKnowledge(userText);
 
-    // 2. REJECT IF NOT FOUND
-    if (!context) {
-      return bot.sendMessage(
-        chatId,
-        "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
-      );
-    }
-
-    // 3. AI REWRITE ONLY
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content: `
-Jawab hanya berdasarkan context yang diberi.
-Jangan tambah maklumat luar.
-Guna gaya santai macam bercakap dengan kawan.
-Jawapan pendek dan jelas.
-`
-        },
-        {
-          role: "user",
-          content: `
-Context:
-${context}
-
-Soalan:
-${userText}
-`
-        }
-      ]
-    });
-
-    const reply = completion.choices[0].message.content;
-
-    await bot.sendMessage(chatId, reply);
-
-  } catch (err) {
-    console.error("Main error:", err);
-    await bot.sendMessage(chatId, "Maaf, ada masalah sikit 😅");
+  if (!context) {
+    return bot.sendMessage(
+      chatId,
+      "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
+    );
   }
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content: "Jawab hanya berdasarkan context."
+      },
+      {
+        role: "user",
+        content: `Context: ${context}\n\nSoalan: ${userText}`
+      }
+    ]
+  });
+
+  await bot.sendMessage(chatId, completion.choices[0].message.content);
 });
