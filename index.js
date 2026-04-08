@@ -27,12 +27,54 @@ const openai = new OpenAI({
 
 console.log("Bot is running...");
 
-// Handle polling error (avoid crash)
 bot.on('polling_error', (error) => {
   console.log("Polling error:", error.message);
 });
 
-// Handle message
+
+// ===============================
+// 🔥 EMBEDDING HELPER FUNCTION
+// ===============================
+
+// Cosine similarity function
+function cosineSimilarity(a, b) {
+  const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const magA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
+  const magB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
+  return dot / (magA * magB);
+}
+
+
+// ===============================
+// 🔥 KNOWLEDGE BASE EMBEDDING
+// ===============================
+
+// 👉 IMPORTANT: letak summary content module kau kat sini
+const knowledgeText = `
+MYNIC adalah agensi rasmi di bawah Kementerian Digital Malaysia.
+Fungsi termasuk pengurusan domain .my, DNS, keselamatan dan transformasi digital untuk PKS.
+`;
+
+// Simpan embedding sekali sahaja (cache)
+let knowledgeEmbedding = null;
+
+async function initKnowledgeEmbedding() {
+  const res = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: knowledgeText,
+  });
+
+  knowledgeEmbedding = res.data[0].embedding;
+}
+
+// Init sekali masa start
+initKnowledgeEmbedding();
+
+
+// ===============================
+// 🔥 MESSAGE HANDLER
+// ===============================
+
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const userText = msg.text;
@@ -40,21 +82,44 @@ bot.on('message', async (msg) => {
   if (!userText) return;
 
   try {
-    // 1. Create thread
+    // ===============================
+    // 🧠 STEP 1: EMBEDDING USER QUESTION
+    // ===============================
+    const userEmbeddingRes = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: userText,
+    });
+
+    const userEmbedding = userEmbeddingRes.data[0].embedding;
+
+    // ===============================
+    // 🧠 STEP 2: SIMILARITY CHECK
+    // ===============================
+    const score = cosineSimilarity(userEmbedding, knowledgeEmbedding);
+
+    console.log("Similarity score:", score);
+
+    // Threshold (boleh adjust)
+    if (score < 0.7) {
+      return bot.sendMessage(chatId,
+        "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
+      );
+    }
+
+    // ===============================
+    // 🤖 STEP 3: CALL ASSISTANT
+    // ===============================
     const thread = await openai.beta.threads.create();
 
-    // 2. Add user message
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       content: userText,
     });
 
-    // 3. Run assistant
     const run = await openai.beta.threads.runs.create(thread.id, {
-  assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
-});
+      assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
+    });
 
-    // 4. Wait for completion
     let status = run.status;
 
     while (status !== "completed") {
@@ -67,12 +132,17 @@ bot.on('message', async (msg) => {
       }
     }
 
-    // 5. Get response
+    // ===============================
+    // 📩 STEP 4: GET CLEAN RESPONSE
+    // ===============================
     const messages = await openai.beta.threads.messages.list(thread.id);
 
-    const reply = messages.data[0].content[0].text.value;
+    const assistantMessage = messages.data.find(
+      (m) => m.role === "assistant"
+    );
 
-    // 6. Send reply to Telegram
+    const reply = assistantMessage.content[0].text.value;
+
     await bot.sendMessage(chatId, reply);
 
   } catch (error) {
