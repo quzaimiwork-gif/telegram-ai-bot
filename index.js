@@ -32,10 +32,10 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-console.log("Bot is running...");
+console.log("Bot is starting...");
 
 // ===============================
-// ⚠️ Polling Error Handler
+// ⚠️ Polling Error
 // ===============================
 bot.on('polling_error', (error) => {
   console.log("Polling error:", error.message);
@@ -59,7 +59,7 @@ function cosineSimilarity(a, b) {
 }
 
 // ===============================
-// 🚀 Init Embeddings (CACHE)
+// 🚀 Init Embeddings
 // ===============================
 let knowledgeEmbeddings = [];
 
@@ -75,11 +75,18 @@ async function initKnowledgeEmbeddings() {
     knowledgeEmbeddings.push(res.data[0].embedding);
   }
 
-  console.log("Embeddings ready!");
+  console.log("Embeddings ready:", knowledgeEmbeddings.length);
 }
 
-// Run once at startup
-initKnowledgeEmbeddings();
+// ===============================
+// 🚀 Start App (IMPORTANT FIX)
+// ===============================
+async function startApp() {
+  await initKnowledgeEmbeddings(); // 🔥 tunggu siap dulu
+  console.log("Bot is ready!");
+}
+
+startApp();
 
 // ===============================
 // 💬 Handle Message
@@ -92,17 +99,22 @@ bot.on('message', async (msg) => {
 
   try {
     // ===============================
-    // 🧠 STEP 1: Embed User Question
+    // 🧠 STEP 1: Add context (BOOST)
+    // ===============================
+    const enrichedText = `Soalan berkaitan topik digital, domain, MYNIC, laman web: ${userText}`;
+
+    // ===============================
+    // 🧠 STEP 2: Embed User
     // ===============================
     const userEmbeddingRes = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: userText,
+      input: enrichedText,
     });
 
     const userEmbedding = userEmbeddingRes.data[0].embedding;
 
     // ===============================
-    // 📊 STEP 2: Similarity Check
+    // 📊 STEP 3: Similarity Check
     // ===============================
     let bestScore = 0;
 
@@ -113,10 +125,13 @@ bot.on('message', async (msg) => {
       }
     }
 
-    console.log("Similarity score:", bestScore);
+    console.log("User:", userText);
+    console.log("Best similarity score:", bestScore);
 
-    // 🔥 STRICT FILTER
-    if (bestScore < 0.65) {
+    // ===============================
+    // 🚫 FILTER (BALANCED)
+    // ===============================
+    if (bestScore < 0.6) {
       return bot.sendMessage(
         chatId,
         "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
@@ -124,12 +139,12 @@ bot.on('message', async (msg) => {
     }
 
     // ===============================
-    // 🧵 STEP 3: Create Thread
+    // 🧵 STEP 4: Create Thread
     // ===============================
     const thread = await openai.beta.threads.create();
 
     // ===============================
-    // 💬 STEP 4: Add User Message
+    // 💬 STEP 5: Add Message
     // ===============================
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
@@ -137,15 +152,15 @@ bot.on('message', async (msg) => {
     });
 
     // ===============================
-    // 🤖 STEP 5: Run Assistant
+    // 🤖 STEP 6: Run Assistant
     // ===============================
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
-      tool_choice: "required"
+      tool_choice: "required",
     });
 
     // ===============================
-    // ⏳ STEP 6: Wait Completion
+    // ⏳ STEP 7: Wait Completion
     // ===============================
     let status = run.status;
 
@@ -165,7 +180,7 @@ bot.on('message', async (msg) => {
     }
 
     // ===============================
-    // 📩 STEP 7: Get Clean Reply
+    // 📩 STEP 8: Get Reply
     // ===============================
     const messages = await openai.beta.threads.messages.list(thread.id);
 
@@ -176,7 +191,7 @@ bot.on('message', async (msg) => {
     const reply = assistantMessage.content[0].text.value;
 
     // ===============================
-    // 📤 STEP 8: Send Reply
+    // 📤 STEP 9: Send Reply
     // ===============================
     await bot.sendMessage(chatId, reply);
 
