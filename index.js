@@ -2,6 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
+const { createClient } = require('@supabase/supabase-js');
 
 // ===============================
 // 🔒 Safety
@@ -18,11 +19,7 @@ process.on('unhandledRejection', (err) => {
 // 🤖 Init Telegram Bot
 // ===============================
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
-  polling: {
-    interval: 300,
-    autoStart: true,
-    params: { timeout: 10 },
-  },
+  polling: true,
 });
 
 // ===============================
@@ -32,64 +29,57 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-console.log("Bot is starting...");
-
 // ===============================
-// ⚠️ Polling Error
+// 🗄️ Init Supabase
 // ===============================
-bot.on('polling_error', (error) => {
-  console.log("Polling error:", error.message);
-});
-
-// ===============================
-// 📚 Load Knowledge
-// ===============================
-const knowledgeChunks = JSON.parse(
-  fs.readFileSync('./knowledge.json', 'utf-8')
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
-// ===============================
-// 🧠 Cosine Similarity
-// ===============================
-function cosineSimilarity(a, b) {
-  const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
-  const magA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
-  const magB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
-  return dot / (magA * magB);
-}
+console.log("Bot is running with RAG + Supabase...");
 
 // ===============================
-// 🚀 Init Embeddings
+// 🔍 SEARCH FUNCTION (CORE RAG)
 // ===============================
-let knowledgeEmbeddings = [];
-
-async function initKnowledgeEmbeddings() {
-  console.log("Initializing embeddings...");
-
-  for (let chunk of knowledgeChunks) {
-    const res = await openai.embeddings.create({
+async function searchKnowledge(query) {
+  try {
+    // 1. Create embedding for query
+    const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: chunk,
+      input: query,
     });
 
-    knowledgeEmbeddings.push(res.data[0].embedding);
+    const queryEmbedding = emb.data[0].embedding;
+
+    // 2. Search in Supabase
+    const { data, error } = await supabase.rpc('match_documents', {
+      query_embedding: queryEmbedding,
+      match_count: 1
+    });
+
+    if (error) {
+      console.error("Supabase error:", error);
+      return null;
+    }
+
+    if (!data || data.length === 0) return null;
+
+    // Optional: check similarity threshold
+    if (data[0].similarity < 0.75) {
+      return null;
+    }
+
+    return data[0].content;
+
+  } catch (err) {
+    console.error("Search error:", err);
+    return null;
   }
-
-  console.log("Embeddings ready:", knowledgeEmbeddings.length);
 }
 
 // ===============================
-// 🚀 Start App (IMPORTANT FIX)
-// ===============================
-async function startApp() {
-  await initKnowledgeEmbeddings(); // 🔥 tunggu siap dulu
-  console.log("Bot is ready!");
-}
-
-startApp();
-
-// ===============================
-// 💬 Handle Message
+// 💬 HANDLE MESSAGE
 // ===============================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -99,39 +89,14 @@ bot.on('message', async (msg) => {
 
   try {
     // ===============================
-    // 🧠 STEP 1: Add context (BOOST)
+    // 🧠 STEP 1: SEARCH KNOWLEDGE
     // ===============================
-    const enrichedText = `Soalan berkaitan topik digital, domain, MYNIC, laman web: ${userText}`;
+    const context = await searchKnowledge(userText);
 
     // ===============================
-    // 🧠 STEP 2: Embed User
+    // ❌ STEP 2: REJECT IF NO CONTEXT
     // ===============================
-    const userEmbeddingRes = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: enrichedText,
-    });
-
-    const userEmbedding = userEmbeddingRes.data[0].embedding;
-
-    // ===============================
-    // 📊 STEP 3: Similarity Check
-    // ===============================
-    let bestScore = 0;
-
-    for (let emb of knowledgeEmbeddings) {
-      const score = cosineSimilarity(userEmbedding, emb);
-      if (score > bestScore) {
-        bestScore = score;
-      }
-    }
-
-    console.log("User:", userText);
-    console.log("Best similarity score:", bestScore);
-
-    // ===============================
-    // 🚫 FILTER (BALANCED)
-    // ===============================
-    if (bestScore < 0.6) {
+    if (!context) {
       return bot.sendMessage(
         chatId,
         "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
@@ -139,59 +104,46 @@ bot.on('message', async (msg) => {
     }
 
     // ===============================
-    // 🧵 STEP 4: Create Thread
+    // 🤖 STEP 3: AI ANSWER (STRICT)
     // ===============================
-    const thread = await openai.beta.threads.create();
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content: `
+You are a helpful assistant.
 
-    // ===============================
-    // 💬 STEP 5: Add Message
-    // ===============================
-    await openai.beta.threads.messages.create(thread.id, {
-      role: "user",
-      content: userText,
+You MUST answer ONLY based on the provided context.
+DO NOT add any information outside the context.
+DO NOT use your own knowledge.
+
+If the answer is not clearly in the context,
+reply exactly:
+"Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
+
+Use a friendly Malaysian conversational tone.
+Keep answers short and clear.
+`
+        },
+        {
+          role: "user",
+          content: `
+Context:
+${context}
+
+Question:
+${userText}
+`
+        }
+      ]
     });
 
-    // ===============================
-    // 🤖 STEP 6: Run Assistant
-    // ===============================
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
-      tool_choice: "required",
-    });
+    const reply = completion.choices[0].message.content;
 
     // ===============================
-    // ⏳ STEP 7: Wait Completion
-    // ===============================
-    let status = run.status;
-
-    while (status !== "completed") {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      const updatedRun = await openai.beta.threads.runs.retrieve(
-        thread.id,
-        run.id
-      );
-
-      status = updatedRun.status;
-
-      if (status === "failed") {
-        throw new Error("Run failed");
-      }
-    }
-
-    // ===============================
-    // 📩 STEP 8: Get Reply
-    // ===============================
-    const messages = await openai.beta.threads.messages.list(thread.id);
-
-    const assistantMessage = messages.data.find(
-      (m) => m.role === "assistant"
-    );
-
-    const reply = assistantMessage.content[0].text.value;
-
-    // ===============================
-    // 📤 STEP 9: Send Reply
+    // 📤 STEP 4: SEND REPLY
     // ===============================
     await bot.sendMessage(chatId, reply);
 
