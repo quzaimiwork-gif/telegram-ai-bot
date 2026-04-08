@@ -1,86 +1,47 @@
 require('dotenv').config();
-const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 
-// ===============================
-// 🔒 Safety
-// ===============================
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err);
-});
-
-process.on('unhandledRejection', (err) => {
-  console.error('UNHANDLED REJECTION:', err);
-});
-
-// ===============================
-// 🤖 Init Telegram Bot
-// ===============================
+// Init
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
 
-// ===============================
-// 🧠 Init OpenAI
-// ===============================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===============================
-// 🗄️ Init Supabase
-// ===============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-console.log("Bot is running with RAG + Supabase...");
+console.log("Bot running with RAG...");
 
-// ===============================
-// 🔍 SEARCH FUNCTION (CORE RAG)
-// ===============================
+// SEARCH FUNCTION
 async function searchKnowledge(query) {
-  try {
-    // 1. Create embedding for query
-    const emb = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: query,
-    });
+  const emb = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: query,
+  });
 
-    const queryEmbedding = emb.data[0].embedding;
+  const queryEmbedding = emb.data[0].embedding;
 
-    // 2. Search in Supabase
-    const { data, error } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
-      match_count: 1
-    });
+  const { data, error } = await supabase.rpc('match_documents', {
+    query_embedding: queryEmbedding,
+    match_count: 1
+  });
 
-    if (error) {
-      console.error("Supabase error:", error);
-      return null;
-    }
+  if (error || !data || data.length === 0) return null;
 
-    if (!data || data.length === 0) return null;
+  // STRICT FILTER
+  if (data[0].similarity < 0.75) return null;
 
-    // Optional: check similarity threshold
-    if (data[0].similarity < 0.75) {
-      return null;
-    }
-
-    return data[0].content;
-
-  } catch (err) {
-    console.error("Search error:", err);
-    return null;
-  }
+  return data[0].content;
 }
 
-// ===============================
-// 💬 HANDLE MESSAGE
-// ===============================
+// BOT
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const userText = msg.text;
@@ -88,14 +49,10 @@ bot.on('message', async (msg) => {
   if (!userText) return;
 
   try {
-    // ===============================
-    // 🧠 STEP 1: SEARCH KNOWLEDGE
-    // ===============================
+    // 1. SEARCH
     const context = await searchKnowledge(userText);
 
-    // ===============================
-    // ❌ STEP 2: REJECT IF NO CONTEXT
-    // ===============================
+    // 2. REJECT IF NO MATCH
     if (!context) {
       return bot.sendMessage(
         chatId,
@@ -103,9 +60,7 @@ bot.on('message', async (msg) => {
       );
     }
 
-    // ===============================
-    // 🤖 STEP 3: AI ANSWER (STRICT)
-    // ===============================
+    // 3. AI RESPONSE (STRICT)
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
@@ -113,18 +68,9 @@ bot.on('message', async (msg) => {
         {
           role: "system",
           content: `
-You are a helpful assistant.
-
-You MUST answer ONLY based on the provided context.
-DO NOT add any information outside the context.
-DO NOT use your own knowledge.
-
-If the answer is not clearly in the context,
-reply exactly:
-"Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
-
-Use a friendly Malaysian conversational tone.
-Keep answers short and clear.
+Answer ONLY based on the provided context.
+Do NOT add anything outside the context.
+Use friendly Malaysian tone.
 `
         },
         {
@@ -142,13 +88,10 @@ ${userText}
 
     const reply = completion.choices[0].message.content;
 
-    // ===============================
-    // 📤 STEP 4: SEND REPLY
-    // ===============================
     await bot.sendMessage(chatId, reply);
 
-  } catch (error) {
-    console.error("ERROR:", error);
+  } catch (err) {
+    console.error(err);
     await bot.sendMessage(chatId, "Maaf, ada masalah sikit 😅");
   }
 });
