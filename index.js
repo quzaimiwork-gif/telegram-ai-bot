@@ -1,8 +1,11 @@
 require('dotenv').config();
+const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
 
-// Safety (avoid crash)
+// ===============================
+// 🔒 Safety
+// ===============================
 process.on('uncaughtException', (err) => {
   console.error('UNCAUGHT EXCEPTION:', err);
 });
@@ -11,7 +14,9 @@ process.on('unhandledRejection', (err) => {
   console.error('UNHANDLED REJECTION:', err);
 });
 
-// Init Telegram Bot
+// ===============================
+// 🤖 Init Telegram Bot
+// ===============================
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: {
     interval: 300,
@@ -20,19 +25,65 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   },
 });
 
-// Init OpenAI
+// ===============================
+// 🧠 Init OpenAI
+// ===============================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
 console.log("Bot is running...");
 
-// Handle polling error
+// ===============================
+// ⚠️ Polling Error Handler
+// ===============================
 bot.on('polling_error', (error) => {
   console.log("Polling error:", error.message);
 });
 
-// Handle message
+// ===============================
+// 📚 Load Knowledge
+// ===============================
+const knowledgeChunks = JSON.parse(
+  fs.readFileSync('./knowledge.json', 'utf-8')
+);
+
+// ===============================
+// 🧠 Cosine Similarity
+// ===============================
+function cosineSimilarity(a, b) {
+  const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const magA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
+  const magB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
+  return dot / (magA * magB);
+}
+
+// ===============================
+// 🚀 Init Embeddings (CACHE)
+// ===============================
+let knowledgeEmbeddings = [];
+
+async function initKnowledgeEmbeddings() {
+  console.log("Initializing embeddings...");
+
+  for (let chunk of knowledgeChunks) {
+    const res = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: chunk,
+    });
+
+    knowledgeEmbeddings.push(res.data[0].embedding);
+  }
+
+  console.log("Embeddings ready!");
+}
+
+// Run once at startup
+initKnowledgeEmbeddings();
+
+// ===============================
+// 💬 Handle Message
+// ===============================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const userText = msg.text;
@@ -41,12 +92,44 @@ bot.on('message', async (msg) => {
 
   try {
     // ===============================
-    // 🧵 1. Create thread
+    // 🧠 STEP 1: Embed User Question
+    // ===============================
+    const userEmbeddingRes = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: userText,
+    });
+
+    const userEmbedding = userEmbeddingRes.data[0].embedding;
+
+    // ===============================
+    // 📊 STEP 2: Similarity Check
+    // ===============================
+    let bestScore = 0;
+
+    for (let emb of knowledgeEmbeddings) {
+      const score = cosineSimilarity(userEmbedding, emb);
+      if (score > bestScore) {
+        bestScore = score;
+      }
+    }
+
+    console.log("Similarity score:", bestScore);
+
+    // 🔥 STRICT FILTER
+    if (bestScore < 0.65) {
+      return bot.sendMessage(
+        chatId,
+        "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
+      );
+    }
+
+    // ===============================
+    // 🧵 STEP 3: Create Thread
     // ===============================
     const thread = await openai.beta.threads.create();
 
     // ===============================
-    // 💬 2. Add user message
+    // 💬 STEP 4: Add User Message
     // ===============================
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
@@ -54,15 +137,15 @@ bot.on('message', async (msg) => {
     });
 
     // ===============================
-    // 🤖 3. Run assistant (FORCE FILE SEARCH)
+    // 🤖 STEP 5: Run Assistant
     // ===============================
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: "asst_XVihcnwGVqqvCQhjS5NVJW1u",
-      tool_choice: "required" // 🔥 penting
+      tool_choice: "required"
     });
 
     // ===============================
-    // ⏳ 4. Wait until completed
+    // ⏳ STEP 6: Wait Completion
     // ===============================
     let status = run.status;
 
@@ -82,7 +165,7 @@ bot.on('message', async (msg) => {
     }
 
     // ===============================
-    // 📩 5. Get assistant reply (CLEAN)
+    // 📩 STEP 7: Get Clean Reply
     // ===============================
     const messages = await openai.beta.threads.messages.list(thread.id);
 
@@ -93,7 +176,7 @@ bot.on('message', async (msg) => {
     const reply = assistantMessage.content[0].text.value;
 
     // ===============================
-    // 📤 6. Send to Telegram
+    // 📤 STEP 8: Send Reply
     // ===============================
     await bot.sendMessage(chatId, reply);
 
