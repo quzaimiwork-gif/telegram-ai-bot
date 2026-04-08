@@ -17,29 +17,30 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-console.log("🤖 Bot running (SAFE MODE)...");
+console.log("🤖 Bot running (KEYWORD MODE)...");
 
 // ===============================
-// 🔥 SIMPLE SEARCH (NO VECTOR)
+// 🔥 KEYWORD SEARCH
 // ===============================
 async function searchKnowledge(userText) {
   try {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('knowledge')
       .select('content');
 
-    if (error || !data) return null;
+    if (!data) return null;
 
-    const lower = userText.toLowerCase();
+    const words = userText.toLowerCase().split(" ");
 
-    // 🔥 simple keyword match
-    const match = data.find(item =>
-      item.content.toLowerCase().includes(lower)
-    );
+    const match = data.find(item => {
+      const text = item.content.toLowerCase();
 
-    if (!match) return null;
+      return words.some(word =>
+        word.length > 3 && text.includes(word)
+      );
+    });
 
-    return match.content;
+    return match ? match.content : null;
 
   } catch (err) {
     console.error(err);
