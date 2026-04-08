@@ -3,9 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 
-// ===============================
 // INIT
-// ===============================
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true,
 });
@@ -19,38 +17,32 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-console.log("🤖 Bot running (STRICT RAG MODE)...");
+console.log("🤖 Bot running (SAFE MODE)...");
 
 // ===============================
-// SEARCH FUNCTION
+// 🔥 SIMPLE SEARCH (NO VECTOR)
 // ===============================
 async function searchKnowledge(userText) {
   try {
-    const enrichedQuery = `Soalan berkaitan domain, MYNIC, laman web, komuniti: ${userText}`;
+    const { data, error } = await supabase
+      .from('knowledge')
+      .select('content');
 
-    const emb = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: enrichedQuery,
-    });
+    if (error || !data) return null;
 
-    const { data, error } = await supabase.rpc('match_documents', {
-      query_embedding: emb.data[0].embedding,
-      match_count: 3
-    });
+    const lower = userText.toLowerCase();
 
-    if (error || !data || data.length === 0) return null;
+    // 🔥 simple keyword match
+    const match = data.find(item =>
+      item.content.toLowerCase().includes(lower)
+    );
 
-    const bestScore = Math.max(...data.map(d => d.similarity));
+    if (!match) return null;
 
-    console.log("Best similarity:", bestScore);
-
-    // 🔥 STRICT FILTER
-    if (bestScore < 0.5) return null;
-
-    return data.map(d => d.content).join("\n\n");
+    return match.content;
 
   } catch (err) {
-    console.error("Search error:", err);
+    console.error(err);
     return null;
   }
 }
@@ -65,10 +57,8 @@ bot.on('message', async (msg) => {
   if (!userText) return;
 
   try {
-    // 1. SEARCH
     const context = await searchKnowledge(userText);
 
-    // 2. HARD BLOCK (NO CONTEXT)
     if (!context) {
       return bot.sendMessage(
         chatId,
@@ -76,7 +66,6 @@ bot.on('message', async (msg) => {
       );
     }
 
-    // 3. AI RESPONSE (STRICT MODE)
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
@@ -84,19 +73,9 @@ bot.on('message', async (msg) => {
         {
           role: "system",
           content: `
-You MUST answer ONLY using the provided context.
-
-DO NOT use your own knowledge.
-DO NOT guess.
-DO NOT add anything outside the context.
-
-If the answer is not clearly found in the context,
-reply exactly:
-
-"Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
-
-Use a friendly Malaysian conversational tone.
-Keep answer short and simple.
+Jawab hanya berdasarkan context.
+Jangan tambah maklumat luar.
+Guna gaya santai.
 `
         },
         {
@@ -105,33 +84,17 @@ Keep answer short and simple.
 Context:
 ${context}
 
-Question:
+Soalan:
 ${userText}
 `
         }
       ]
     });
 
-    const reply = completion.choices[0].message.content;
-
-    // ===============================
-    // 🔥 EXTRA GUARD (ANTI-HALLUCINATION)
-    // ===============================
-    const firstWord = userText.toLowerCase().split(" ")[0];
-
-    if (!context.toLowerCase().includes(firstWord)) {
-      console.log("⚠️ Blocked hallucination");
-      return bot.sendMessage(
-        chatId,
-        "Maaf, yang ni saya tak dapat nak bantu jawab buat masa ni."
-      );
-    }
-
-    // 4. SEND REPLY
-    await bot.sendMessage(chatId, reply);
+    await bot.sendMessage(chatId, completion.choices[0].message.content);
 
   } catch (err) {
-    console.error("Main error:", err);
+    console.error(err);
     await bot.sendMessage(chatId, "Maaf, ada masalah sikit 😅");
   }
 });
